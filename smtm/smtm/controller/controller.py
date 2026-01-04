@@ -1,0 +1,187 @@
+import signal
+from ..config import Config
+from ..log_manager import LogManager
+from ..analyzer import Analyzer
+from ..trader.upbit_trader import UpbitTrader
+from ..data.upbit_data_provider import UpbitDataProvider
+from ..trader.bithumb_trader import BithumbTrader
+from ..data.bithumb_data_provider import BithumbDataProvider
+from ..strategy.strategy_factory import StrategyFactory
+from ..operator import Operator
+
+
+class Controller:
+    """
+    CLI를 사용하는 기본 컨트롤러
+    Basic controller using CLI
+    """
+
+    MAIN_STATEMENT = "명령어를 입력하세요. (h: 도움말): "
+
+    def __init__(
+        self,
+        interval=10,
+        strategy="BNH",
+        budget=50000,
+        currency="BTC",
+        is_bithumb=False,
+    ):
+        self.logger = LogManager.get_logger("Controller")
+        self.terminating = False
+        self.interval = float(interval)
+        self.operator = Operator()
+
+        self.budget = int(budget)
+        self.is_initialized = False
+        self.command_list = []
+        self.create_command()
+        self.is_bithumb = is_bithumb
+        self.strategy = None
+        self.currency = currency
+        LogManager.set_stream_level(Config.operation_log_level)
+
+        self.strategy = StrategyFactory.create(strategy)
+        if self.strategy is None:
+            raise UserWarning(f"Invalid Strategy! {strategy}")
+
+    def create_command(self):
+        self.command_list = [
+            {
+                "guide": "{0:15}도움말 출력".format("h, help"),
+                "cmd": ["help", "h"],
+                "action": self.print_help,
+            },
+            {
+                "guide": "{0:15}자동 거래 시작".format("r, run"),
+                "cmd": ["run", "r"],
+                "action": self.start,
+            },
+            {
+                "guide": "{0:15}자동 거래 중지".format("s, stop"),
+                "cmd": ["stop", "s"],
+                "action": self.stop,
+            },
+            {
+                "guide": "{0:15}프로그램 종료".format("t, terminate"),
+                "cmd": ["terminate", "t"],
+                "action": self.terminate,
+            },
+            {
+                "guide": "{0:15}정보 조회".format("q, query"),
+                "cmd": ["query", "q"],
+                "action": self._on_query_command,
+            },
+        ]
+
+    def main(self):
+        if self.is_bithumb:
+            data_provider = BithumbDataProvider(currency=self.currency)
+            trader = BithumbTrader(currency=self.currency, budget=self.budget)
+        else:
+            data_provider = UpbitDataProvider(
+                currency=self.currency, interval=Config.candle_interval
+            )
+            trader = UpbitTrader(currency=self.currency, budget=self.budget)
+
+        # 실전(라이브) 경로에서는 반드시 simulation 플래그 OFF
+        try:
+            self.strategy.is_simulation = False
+        except Exception:
+            pass
+
+        analyzer = Analyzer()
+        try:
+            analyzer.is_simulation = False
+        except Exception:
+            pass
+
+        self.operator.initialize(
+            data_provider,
+            self.strategy,
+            trader,
+            analyzer,
+            budget=self.budget,
+        )
+
+        self.operator.set_interval(self.interval)
+        print("##### smtm is intialized #####")
+        print(
+            f"interval: {self.interval}, strategy: {self.strategy.NAME} , trader: {trader.NAME}"
+        )
+        print("==============================")
+
+        self.logger.info(
+            f"interval: {self.interval}, strategy: {self.strategy.NAME} , trader: {trader.NAME}"
+        )
+        signal.signal(signal.SIGINT, self.terminate)
+        signal.signal(signal.SIGTERM, self.terminate)
+
+        while not self.terminating:
+            try:
+                key = input(self.MAIN_STATEMENT)
+                self.logger.debug(f"Execute command {key}")
+                self._on_command(key)
+            except EOFError:
+                break
+
+    def print_help(self):
+        print("명령어 목록 =================")
+        for item in self.command_list:
+            print(item["guide"])
+
+    def _on_command(self, key):
+        for cmd in self.command_list:
+            if key.lower() in cmd["cmd"]:
+                cmd["action"]()
+                return
+        print("invalid command")
+
+    # 이하 원본 로직 유지 (start/stop/terminate/query 등)
+
+    def _on_query_command(self):
+        value = input("무엇을 조회할까요? (ex. 1.state, 2.score, 3.result) :")
+        key = value.lower()
+        if key in ["state", "1"]:
+            print(f"현재 상태: {self.operator.state.upper()}")
+        elif key in ["score", "2"]:
+            self._get_score()
+        elif key in ["result", "3"]:
+            self._get_trading_record()
+
+    def _get_score(self):
+        def print_score_and_main_statement(score):
+            print("current score ==========")
+            print(score)
+
+        self.operator.get_score(print_score_and_main_statement)
+
+    def _get_trading_record(self):
+        if self.operator is None:
+            print("초기화가 필요합니다")
+            return
+
+        results = self.operator.get_trading_results()
+        if results is None or len(results) == 0:
+            print("거래 기록이 없습니다")
+            return
+
+        for result in results:
+            print(f"@{result['date_time']}, {result['type']}")
+            print(f"{result['price']} x {result['amount']}")
+
+    def start(self):
+        if self.operator.start() is not True:
+            print("프로그램 시작을 실패했습니다")
+
+    def stop(self):
+        if self.operator is not None:
+            self.operator.stop()
+
+    def terminate(self, signum=None, frame=None):
+        del frame
+        if signum is not None:
+            print("강제 종료 신호 감지")
+        print("프로그램 종료 중.....")
+        self.stop()
+        self.terminating = True
+        print("Good Bye~")

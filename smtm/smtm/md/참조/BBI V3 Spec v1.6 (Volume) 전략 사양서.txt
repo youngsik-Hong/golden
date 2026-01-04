@@ -1,0 +1,513 @@
+BBI V3 Spec v1.6 (Volume) 전략 사양서 (TXT 버전)
+==============================================
+
+1. 전략 개요
+----------------
+이 전략은 비트코인(또는 유사한 고변동성 코인)의 단기 급락 구간을 공략하여,
+분할 매수(DCA) + 보수적 익절 + 강력한 리스크 관리로 운용하는 자동 매매 전략이다.
+
+핵심 특징:
+- 볼린저 밴드 하단(BB lower) 터치 시 매수 윈도우 시작
+- RSI / MACD / Stochastic / ATR / EMA 필터 조합으로 진입 필터링
+- 계좌의 약 60%만 사용, 최대 5차까지 물타기
+- 차수별 리스크 기반 TP (매수 차수가 많아질수록 더 낮은 수익률에서 익절)
+- 1~2차 비상 손절(-8%), 5차 이후 확실 손절(-2%)
+- 급등 구간에서 최고가 기준 -1% 트레일링 매도
+- 3차 이상 물타기(3~5차) 시 볼륨 스파이크(거래량 폭발) 필수 조건
+
+이 문서는 코드 없이도 동일 전략을 재구현할 수 있도록
+정확한 조건·파라미터·상태 전이 규칙을 서술한다.
+
+
+2. 입력 데이터 / 환경
+----------------------
+캔들 단위의 시계열 데이터를 사용한다.
+시간 단위는 1분봉을 기본 가정하지만, “틱 = 캔들 인덱스” 기준이므로
+다른 주기로도 동일 원리로 적용 가능하다.
+
+각 캔들은 다음 필드를 가진다고 가정한다:
+
+- date_time: ISO 포맷 문자열 (예: "2025-01-01T12:34:00")
+- opening_price: 시가
+- high_price: 고가
+- low_price: 저가
+- closing_price: 종가
+- volume: 거래량
+  (만약 volume 키가 없으면 candle_acc_trade_volume 또는 acc_trade_volume를 사용할 수 있음)
+
+수수료:
+- 체결 1회당 수수료 비율: COMMISSION = 0.0005 (0.05%)
+
+예산 및 최소 주문 금액:
+- budget: 초기 예산 (KRW 또는 해당 거래소 기준 화폐 단위)
+- min_price: 최소 주문 허용 금액 (예: 5,000원)
+
+기본 포지션 크기:
+- POSITION_SIZE_PERCENT = 0.03
+  → 예산의 3%를 “기본 포지션 단위”로 사용
+
+차수별 매수 비중:
+- BUY_WEIGHTS = [7.0, 5.0, 3.6, 2.4, 2.0]
+  → n차 매수 예산 = budget * POSITION_SIZE_PERCENT * BUY_WEIGHTS[n-1]
+  → 1~5차까지 합산하면 약 60% 수준 예산 사용
+
+
+3. 주요 파라미터 요약
+----------------------
+// 전략 이름/코드 (참고용)
+NAME = "BBI V3 Spec v1.6 (Volume)"
+CODE = "BBI-V3-SPEC-V16-VOL"
+
+// 지표 / 필터
+RSI_LIMIT = 60
+MACD_LIMIT = -250000
+STOCH_LIMIT = 2.5
+
+WINDOW_SIZE = 10              // 윈도우 최대 길이(틱)
+TIME_WINDOW_FOR_BUY = 10      // BB 터치 후 10틱 이내만 매수 허용
+
+// 쿨다운
+BUY_COOLDOWN_TICKS = 15       // 매수-매수 사이 최소 15틱
+SELL_COOLDOWN_TICKS = 5       // 전량 매도 후 5틱 동안 신규 1차 매수 금지
+
+// ATR / EMA
+ATR_PERIOD = 14
+ATR_PERCENTILE = 40           // ATR 히스토리 상 40 percentile 이상일 때만 진입
+ATR_HISTORY_SIZE = 100        // ATR 히스토리 최대 길이
+
+EMA_PERIOD = 21
+EMA_DISTANCE_PERCENT_MIN = 0.37   // (EMA - 종가)/EMA*100 >= 0.37% 이상일 때만 윈도우 시작
+
+// 늦은 차수(3~5차) 보수적 진입 필터
+LATE_RSI_LIMIT = 60
+LATE_MACD_LIMIT = -250000
+LATE_STOCH_LIMIT = 2.5
+LATE_EMA_DISTANCE_MIN = 0.37
+
+// 차수별 드로우다운(DCA) 조건
+// index = 현재 buy_count (0 = 1차 직전, 1 = 2차 직전, ...)
+DRAWDOWN_THRESHOLDS = [0.0, 0.02, 0.03, 0.04, 0.05]
+// 1차 직전: 조건 없음
+// 2차 직전: 평단 대비 -2% 이상
+// 3차 직전: 평단 대비 -3% 이상
+// 4차 직전: 평단 대비 -4% 이상
+// 5차 직전: 평단 대비 -5% 이상
+
+// 자금 관리
+POSITION_SIZE_PERCENT = 0.03
+MAX_BUY_COUNT = 5
+BUY_WEIGHTS = [7.0, 5.0, 3.6, 2.4, 2.0]
+
+// 차수별 리스크 기반 TP(익절 목표)
+// index = buy_count - 1 (1차=0, 2차=1, ...)
+BREAKEVEN_EXIT_THRESHOLDS = [0.01, 0.009, 0.008, 0.007, 0.006]
+// 1차: +1.0%
+// 2차: +0.9%
+// 3차: +0.8%
+// 4차: +0.7%
+// 5차 이상: +0.6%
+
+// 기타 TP 단계 (기존 구조 유지용, 실제로는 위 동적 TP와 랠리 트레일링이 우선)
+PROFIT_STAGE_1 = 0.012        // +1.2%
+SELL_RATIO_STAGE_1 = 0.50     // 50% 부분 매도
+TP2_PROFIT_MIN = 0.02         // +2%
+TP2_PROFIT_MAX = 0.03         // +3%
+TP3_START_PROFIT = 0.03       // +3%
+TP3_TRAIL_DROP = 0.02         // TP3 최고가 대비 -2%
+TP3_HOLD_BARS = 5             // 5틱 유지 후 청산
+
+// 손절 관련
+STOP_LOSS = 0.04              // 일반 -4% 손절은 실제로 사용하지 않음
+STOP_LOSS_MIN_BUY_COUNT = 1
+
+EMERGENCY_STOP_LOSS = 0.08    // 1~2차 비상 손절: -8%
+EMERGENCY_STOP_MAX_BUY_COUNT = 2
+
+MAX_LOSS_AFTER_5TH = 0.02     // 5차 이후 확실 손절: -2%
+
+// 급등(랠리) 트레일링
+RALLY_START_PROFIT = 0.02     // +2% 이상이면 랠리 모드 진입
+RALLY_TRAIL_DROP = 0.01       // 랠리 최고가 대비 -1% 이탈 시 전량 매도
+
+// 볼륨 스파이크
+VOL_MA_PERIOD = 20            // 최근 20개 캔들 평균
+VOL_SPIKE_FACTOR = 2.5        // 평균대비 2.5배 이상이면 스파이크
+VOL_MIN_SAMPLES = 10          // 평균 계산에 필요한 최소 샘플 수
+
+
+4. 볼륨 스파이크 정의
+----------------------
+볼륨 스파이크(Volume Spike)는
+“현재 캔들의 거래량이 최근 평균보다 2.5배 이상 큰 상태”로 정의한다.
+
+입력:
+- volumes[i]: i번째 캔들의 거래량 (실수, 없으면 None 또는 0)
+
+알고리즘 (인덱스 idx에서 스파이크 여부 판정):
+
+1) current_vol = volumes[idx]
+   - current_vol가 None 또는 <= 0 이면 스파이크가 아니다(False)
+
+2) 최근 창(window) 계산:
+   - start = max(0, idx - VOL_MA_PERIOD + 1)
+   - window = volumes[start : idx+1] 중에서 (v is not None and v > 0) 인 값만 모은 리스트
+
+3) len(window) < VOL_MIN_SAMPLES 이면 스파이크 아님(False)
+
+4) avg_vol = window의 산술 평균
+   - avg_vol <= 0 이면 스파이크 아님(False)
+
+5) current_vol >= avg_vol * VOL_SPIKE_FACTOR 이면 스파이크(True)
+   - 그 외에는 False
+
+전략에서 사용:
+- buy_count >= 2 (3차 이상 물타기)인 경우에만
+  “볼륨 스파이크 조건을 추가 필수 조건”으로 사용한다.
+- 1차, 2차 매수에는 볼륨 조건을 사용하지 않는다.
+
+
+5. 상태 변수 정의
+------------------
+전략 내부에서 유지해야 하는 주요 상태 변수는 다음과 같다.
+
+일반:
+- data: 모든 캔들 정보 리스트
+- volumes: 각 캔들 거래량 리스트
+- atr_values: ATR 값 히스토리 (최대 ATR_HISTORY_SIZE 개)
+- budget: 초기 예산
+- balance: 현재 현금 잔고
+- min_price: 최소 주문 금액
+
+포지션 관련:
+- buy_count: 현재까지 체결된 매수 차수 (0~5)
+- buy_prices: 각 차수별 매수가 리스트
+- buy_amounts: 각 차수별 매수 수량 리스트
+- total_amount: 현재 보유 총 수량
+- average_price: 현재 평단가
+
+윈도우 / 시그널 관련:
+- in_window: 현재 BB 하단 터치 이후 "매수 윈도우"가 열려 있는지 여부(True/False)
+- window_start_idx: 윈도우가 시작된 캔들 인덱스
+- flag_rsi: 윈도우 내에서 RSI 조건(rsi <= RSI_LIMIT)을 만족한 적이 있는지
+- flag_macd: MACD 조건(macd <= MACD_LIMIT)을 만족한 적이 있는지
+- flag_stoch: Stoch 조건(stoch <= STOCH_LIMIT)을 만족한 적이 있는지
+- last_buy_idx: 마지막 매수가 발생한 캔들 인덱스
+- last_sell_idx: 마지막 “전량 매도”가 발생한 캔들 인덱스
+
+익절 / 트레일링 관련:
+- stage_1_done, stage_2_done, remaining_ratio: TP1/TP2 용 상태 (유지만 해도 되고, 미사용 가능)
+- tp3_active, tp3_start_idx, tp3_high_price: TP3 트레일링용 상태 (보조용)
+- rally_active: 급등(랠리) 모드 활성 여부
+- rally_high_price: 랠리 모드 동안 기록한 최고가
+
+
+6. 지표 계산 규칙
+------------------
+각 새 캔들이 들어올 때마다 다음 지표를 계산·갱신한다.
+
+입력:
+- closes[i]  = data[i].closing_price
+- highs[i]   = data[i].high_price
+- lows[i]    = data[i].low_price
+
+1) 볼린저 밴드 하단 (bb_lower):
+   - 기간 20 기준
+   - ma20[i]  = 최근 20개 종가 이동평균
+   - std20[i] = 최근 20개 종가 표준편차
+   - bb_lower[i] = ma20[i] - 2 * std20[i]
+   - n < 20 이면 bb_lower는 None
+
+2) RSI(14):
+   - delta = closes.diff()
+   - gain = max(delta, 0), loss = max(-delta, 0)
+   - avg_gain = 14기간 평균 gain
+   - avg_loss = 14기간 평균 loss
+   - RS = avg_gain / avg_loss (avg_loss가 0이면 NaN 처리)
+   - RSI = 100 - (100 / (1 + RS))
+   - n < 14 이면 RSI는 None
+
+3) MACD:
+   - ema12 = 종가의 EMA(12, adjust=False)
+   - ema26 = 종가의 EMA(26, adjust=False)
+   - MACD = ema12 - ema26
+   - n < 26 이면 MACD는 None
+
+4) Stochastic %K:
+   - low14 = 최근 14개 저가의 최저값
+   - high14 = 최근 14개 고가의 최고값
+   - raw_k = (close - low14) / (high14 - low14) * 100
+   - stoch_k = raw_k의 3기간 이동평균
+   - 분모가 0이면 NaN
+   - n < 14 이면 stoch_k는 None
+
+5) ATR(14):
+   - prev_close = 이전 캔들의 종가
+   - TR = max(고-저, |고-이전종가|, |저-이전종가|)
+   - ATR = TR의 14기간 단순 이동평균
+   - n < ATR_PERIOD+1 이면 ATR은 None
+   - ATR이 계산될 때마다 atr_values에 append
+     (길이가 ATR_HISTORY_SIZE를 넘으면 오래된 값부터 삭제)
+
+6) EMA(21):
+   - ema21 = 종가의 EMA(21)
+   - n < 21 이면 ema는 None
+
+
+7. 매수 윈도우 시작 조건
+-------------------------
+각 캔들 인덱스 idx에서:
+
+1) 지표 유효성:
+   - 현재 캔들에서 bb_lower, rsi, macd, stoch, atr, ema가 모두 유효해야 한다.
+
+2) 가격이 BB 하단 터치:
+   - low_price <= bb_lower
+   - 현재 in_window == False 여야 한다.
+
+3) 전량 매도 후 쿨다운:
+   - total_amount == 0 이고 last_sell_idx >= 0 이며
+   - idx - last_sell_idx < SELL_COOLDOWN_TICKS 이면
+     → 윈도우 시작 금지, 아무 것도 하지 않고 반환.
+
+4) ATR 필터:
+   - atr_values 길이 >= 50 일 때만 필터 적용.
+   - atr_threshold = ATR 히스토리의 40 percentile 값
+   - 현재 ATR < atr_threshold 이면 윈도우 시작 금지.
+
+5) EMA 거리 필터:
+   - ema_distance_percent = (ema - close)/ema * 100
+   - ema_distance_percent < EMA_DISTANCE_PERCENT_MIN (0.37%) 이면 윈도우 시작 금지.
+
+6) 기타 조건:
+   - buy_count < MAX_BUY_COUNT 이어야 함.
+   - balance >= BASE_POSITION_SIZE 이어야 함.
+
+위 조건을 모두 통과하면:
+- in_window = True
+- window_start_idx = idx
+- flag_rsi = flag_macd = flag_stoch = False 로 초기화
+- did_buy_this_window = False
+
+
+8. 윈도우 내 매수 트리거 조건
+-------------------------------
+윈도우가 활성(in_window == True) 상태에서, 각 새로운 캔들 idx에 대해 다음을 수행한다.
+
+1) 지표 플래그 업데이트:
+   - rsi <= RSI_LIMIT 이면 flag_rsi = True
+   - macd <= MACD_LIMIT 이면 flag_macd = True
+   - stoch <= STOCH_LIMIT 이면 flag_stoch = True
+
+2) 세 플래그(flag_rsi, flag_macd, flag_stoch)가 모두 True인 경우:
+
+   2-1) 시간 제한 체크:
+        - elapsed_ticks = idx - window_start_idx
+        - elapsed_ticks > TIME_WINDOW_FOR_BUY (10틱) 이면
+          → 윈도우 종료 (in_window=False, 플래그 리셋) 후 반환
+
+   2-2) 차수 / 예산 / 쿨다운:
+        - buy_count < MAX_BUY_COUNT 여야 함
+        - weight = BUY_WEIGHTS[buy_count]
+        - buy_budget = BASE_POSITION_SIZE * weight
+        - balance >= buy_budget 이어야 함
+        - idx - last_buy_idx >= BUY_COOLDOWN_TICKS 이어야 함
+
+   2-3) 차수별 추가 필터:
+
+        (a) 1차 직전 (buy_count == 0)
+            - 드로우다운, 늦은 차수 필터, 볼륨 조건 없음.
+            - 단순히 위 조건만 만족하면 1차 매수 허용.
+
+        (b) 2차 이상 (buy_count > 0)
+            - 현재가 close < 평균가 average_price 여야 한다.
+              (현재가가 평단 이상이면 물타기 금지)
+            - drawdown = (average_price - close) / average_price
+            - idx_dd = min(buy_count, len(DRAWDOWN_THRESHOLDS)-1)
+            - drawdown >= DRAWDOWN_THRESHOLDS[idx_dd] 이어야 한다.
+              예) 2차 직전(buy_count=1) → -2% 이상 필요
+
+        (c) 3차 이상 (buy_count >= 2) - 늦은 차수/볼륨 필터 추가
+            [늦은 차수 지표 필터]
+            - RSI <= LATE_RSI_LIMIT
+            - MACD <= LATE_MACD_LIMIT
+            - Stoch <= LATE_STOCH_LIMIT
+            - EMA 거리 (ema_dist = (ema - close)/ema * 100) >= LATE_EMA_DISTANCE_MIN
+
+            [볼륨 스파이크 필터]
+            - _is_volume_spike(idx) == True
+            - 스파이크가 아니면 3~5차 물타기 금지
+
+3) 위 모든 조건을 통과하면:
+
+   - 해당 캔들의 종가(또는 원하는 가격 정책)에 대해
+     “buy_count+1 차 매수” 요청을 생성한다.
+   - last_buy_idx = idx 로 갱신한다.
+   - 실제 체결(update_result) 단계에서 buy_count, total_amount, average_price 등을 갱신한다.
+
+4) 윈도우 수명 종료:
+   - idx >= window_start_idx + WINDOW_SIZE - 1 이면
+     윈도우를 자동 종료(in_window=False, 플래그 리셋)한다.
+
+
+9. 매도 로직 (우선순위)
+------------------------
+total_amount > 0 이고 average_price > 0 일 때만 평가한다.
+현재 가격 = current_price, 수익률 = profit = (current_price - average_price) / average_price
+
+우선순위는 아래 순서대로 적용한다(위에 해당되면 아래는 평가하지 않음).
+
+1) 5차 이후 확실 손절 (-2%)
+   - 조건:
+     - buy_count >= MAX_BUY_COUNT (보통 5차까지 모두 진입한 상태)
+     - drop_from_avg = (average_price - current_price) / average_price >= MAX_LOSS_AFTER_5TH (0.02)
+   - 동작:
+     - 전량 매도 (Sell ALL), 이유 코드 "MAX_LOSS_AFTER_5TH"
+
+2) 1~2차 비상 손절 (-8%)
+   - 조건:
+     - buy_count <= EMERGENCY_STOP_MAX_BUY_COUNT (2)
+     - profit <= -EMERGENCY_STOP_LOSS ( -0.08 )
+   - 동작:
+     - 전량 매도, 이유 코드 "EMERGENCY_STOP"
+
+3) 급등(랠리) 트레일링
+   - profit >= RALLY_START_PROFIT (0.02, +2%) 이면 랠리 모드 진입 또는 유지:
+     - rally_active == False 이면:
+       - rally_active = True
+       - rally_high_price = current_price
+     - rally_active == True 이면:
+       - current_price > rally_high_price 이면 rally_high_price 갱신
+     - trail_stop = rally_high_price * (1 - RALLY_TRAIL_DROP)
+       (RALLY_TRAIL_DROP = 0.01 → 최고가 대비 -1%)
+     - current_price <= trail_stop 이면:
+       - 전량 매도, 이유 코드 "RALLY_TRAIL_STOP"
+
+   - profit < 0 이고 rally_active == True 인 경우:
+     - rally_active = False
+     - rally_high_price = 0 으로 리셋
+     (수익이 완전히 사라진 경우 랠리 모드 종료)
+
+4) 차수별 동적 익절 (랠리 모드가 아닐 때만)
+   - dynamic_exit = BREAKEVEN_EXIT_THRESHOLDS[buy_count-1]
+     (인덱스 범위를 벗어나면 마지막 원소 사용)
+   - 조건:
+     - rally_active == False
+     - profit >= dynamic_exit
+   - 동작:
+     - 전량 매도, 이유 코드 "DYNAMIC_BREAKEVEN_EXIT"
+     - TP/랠리 관련 상태(stage_1_done 등) 모두 초기화
+
+5) TP1/TP2/TP3 (선택적으로 유지 또는 제거 가능)
+   - PROFIT_STAGE_1(1.2%) 이상일 때 부분 익절,
+     PROFIT_STAGE_1 이상 + TP2/TP3 구간에서 추가 로직 등.
+   - 현재 전략에서는 급등 트레일링 + 동적 TP가 메인 익절 로직이므로
+     TP1/2/3은 부가적인 구조로만 간주해도 된다.
+
+
+10. 포지션 전량 종료 시 상태 초기화
+----------------------------------
+전량 매도가 체결되어 total_amount가 사실상 0이 되면
+다음과 같이 모든 포지션 관련 상태를 초기화한다.
+
+- total_amount = 0
+- buy_count = 0
+- buy_prices = [], buy_amounts = []
+- average_price = 0
+
+- stage_1_done = False
+- stage_2_done = False
+- remaining_ratio = 1.0
+- trailing_active = False
+- max_price_after_target = 0
+- tp3_active = False
+- tp3_start_idx = -1
+- tp3_high_price = 0.0
+
+- rally_active = False
+- rally_high_price = 0.0
+
+- last_sell_idx = 현재 캔들 인덱스
+- last_buy_idx = 매우 작은 값(예: -999)
+
+- 만약 in_window == True 였다면:
+  - in_window = False 로 하고,
+  - window_start_idx 및 flag_rsi / flag_macd / flag_stoch 리셋
+
+포지션이 0이 된 시점부터 SELL_COOLDOWN_TICKS(5틱) 동안은
+새로운 윈도우 시작(1차 매수 시도)을 금지한다.
+
+
+11. 주문 및 체결 처리 개요
+---------------------------
+전략은 “주문 요청 생성”과 “체결 결과 반영”을 분리해서 처리한다.
+
+(1) 주문 요청 생성:
+- 매수 또는 매도 조건이 충족되면
+  - type: "buy" 또는 "sell"
+  - price: 현재 종가 (또는 원하는 주문 방식에 맞는 가격)
+  - amount: 주문 수량
+  을 담은 요청 객체를 생성한다.
+
+- get_request() 호출 시:
+  - 현재 요청이 있으면 그 요청을 반환하고,
+  - 동시에 이전 대기 주문들(waiting_requests)에 대해서는
+    type: "cancel" 요청을 함께 반환하여, 항상 하나의 유효 주문만 유지한다.
+  - 시뮬레이션 모드일 경우, date_time은 마지막 캔들의 시각을 사용한다.
+
+(2) 체결 결과(update_result):
+- result 객체에는 최소한 다음 정보가 포함된다고 가정한다:
+  - result["state"]: "requested" 또는 "done"
+  - result["type"]: "buy" 또는 "sell"
+  - result["price"]: 체결 가격
+  - result["amount"]: 체결 수량
+  - result["msg"]: "success" 등 성공 여부
+
+- state == "requested":
+  - 해당 주문 id를 waiting_requests에 저장 (미체결 상태)
+
+- state == "done":
+  - waiting_requests에서 해당 id 제거
+  - type == "buy":
+    - total = price * amount
+    - fee = total * COMMISSION
+    - balance -= (total + fee)
+    - total_amount += amount
+    - average_price = (이전평단*이전수량 + total) / 새로운 total_amount
+  - type == "sell":
+    - total = price * amount
+    - fee = total * COMMISSION
+    - balance += (total - fee)
+    - total_amount -= amount
+    - total_amount가 거의 0이면 “전량 매도”로 보고
+      포지션 초기화 로직(10번)을 수행한다.
+
+
+12. 구현 시 유의 사항 및 철학
+-------------------------------
+이 사양서는 지표 계산, 매수/매도 조건, 쿨다운, 드로우다운 규칙,
+볼륨 스파이크, 급등 트레일링, 비상 손절 및 5차 확실 손절까지
+전략의 모든 핵심을 포함하고 있다.
+
+어떤 언어/플랫폼(Python, C++, JS, Pinescript 등)에서도
+아래 원칙만 지키면 동일 전략을 재구현할 수 있다.
+
+전략 철학 요약:
+1) 1차 진입:
+   - BB 하단 터치 + RSI/MACD/Stoch/ATR/EMA 필터를 모두 통과한
+     “과매도 급락 구간”에서만 진입.
+2) 2~5차 물타기:
+   - 항상 평단 이하에서만,
+   - 차수별 드로우다운 조건을 만족해야만 진입.
+   - 3차 이상에서는 지표를 더 보수적으로 보고
+     볼륨 스파이크(투매/거래량 폭발)까지 동반되었을 때만 물타기 허용.
+3) 손실 관리:
+   - 초반(1~2차)에는 -8% 비상 손절(천재지변 방어)만 존재.
+   - 5차까지 다 들어간 뒤에는 평단 -2%에서 확실 손절.
+4) 수익 실현:
+   - 매수 차수가 늘어날수록 “더 낮은 수익률에서 빠르게 탈출”.
+   - 수익이 +2%를 넘는 급등 구간에서는 최고가를 추적하다가
+     최고가 대비 -1%만 내려와도 전량 매도하여 이익을 보호.
+
+이 텍스트 파일 하나만 있으면,
+향후 어떤 GPT/개발자라도 위 조건에 맞추어
+동일한 전략을 다시 코드로 구현할 수 있다.

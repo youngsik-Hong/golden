@@ -1,0 +1,117 @@
+📌 1) SAFE PRESET (보수형)
+
+파일명 추천: preset_safe.json
+{
+  "EMERGENCY_STOP_LOSS": 0.07,
+  "EMERGENCY_STOP_MAX_BUY_COUNT": 2,
+  "MAX_LOSS_AFTER_5TH": 0.018,
+
+  "DRAWDOWN_THRESHOLDS": [0.0, 0.025, 0.035, 0.045, 0.055],
+  "BUY_WEIGHTS": [6.5, 4.5, 3.2, 2.2, 1.8],
+  "BUY_COOLDOWN_TICKS": 18,
+
+  "VOL_SPIKE_FACTOR": 2.7,
+  "VOL_MA_PERIOD": 22,
+  "LATE_RSI_LIMIT": 58,
+  "LATE_MACD_LIMIT": -260000,
+  "LATE_STOCH_LIMIT": 2.3,
+  "LATE_EMA_DISTANCE_MIN": 0.40,
+
+  "BREAKEVEN_EXIT_THRESHOLDS": [0.009, 0.008, 0.007, 0.006, 0.005],
+  "RALLY_START_PROFIT": 0.022,
+  "RALLY_TRAIL_DROP": 0.009,
+
+  "ATR_PERCENTILE": 45,
+  "EMA_DISTANCE_PERCENT_MIN": 0.40,
+  "SELL_COOLDOWN_TICKS": 7
+}
+
+}
+SAFE 프리셋 성격 정리
+물타기 속도 느림
+
+평단 아래에서도 더 깊이 빠져야 물타기 허용
+
+TP는 빠르며 (수익 적어도 빨리 챙기기)
+
+랠리 트레일링도 더 타이트
+
+변동성이 충분히 커야만 진입 → ATR 45%
+→ 하락장 안정성 최우선 프리셋
+
+📌 2) BALANCED PRESET (기본형)
+
+파일명 추천: preset_balanced.json
+{
+  "EMERGENCY_STOP_LOSS": 0.08,
+  "EMERGENCY_STOP_MAX_BUY_COUNT": 2,
+  "MAX_LOSS_AFTER_5TH": 0.02,
+
+  "DRAWDOWN_THRESHOLDS": [0.0, 0.02, 0.03, 0.04, 0.05],
+  "BUY_WEIGHTS": [7.0, 5.0, 3.6, 2.4, 2.0],
+  "BUY_COOLDOWN_TICKS": 15,
+
+  "VOL_SPIKE_FACTOR": 2.5,
+  "VOL_MA_PERIOD": 20,
+  "LATE_RSI_LIMIT": 60,
+  "LATE_MACD_LIMIT": -250000,
+  "LATE_STOCH_LIMIT": 2.5,
+  "LATE_EMA_DISTANCE_MIN": 0.37,
+
+  "BREAKEVEN_EXIT_THRESHOLDS": [0.01, 0.009, 0.008, 0.007, 0.006],
+  "RALLY_START_PROFIT": 0.02,
+  "RALLY_TRAIL_DROP": 0.01,
+
+  "ATR_PERCENTILE": 40,
+  "EMA_DISTANCE_PERCENT_MIN": 0.37,
+  "SELL_COOLDOWN_TICKS": 5
+}
+BALANCED 성격
+
+전략의 기본 공식 그대로
+
+모든 파라미터가 균형
+
+공격적도 보수적도 아님
+→ 백테스트 기준 가장 검증된 안정형
+
+📌 3) AGGRESSIVE PRESET (공격형)
+
+파일명 추천: preset_aggressive.json
+
+{
+  "EMERGENCY_STOP_LOSS": 0.09,
+  "EMERGENCY_STOP_MAX_BUY_COUNT": 2,
+  "MAX_LOSS_AFTER_5TH": 0.025,
+
+  "DRAWDOWN_THRESHOLDS": [0.0, 0.015, 0.025, 0.035, 0.045],
+  "BUY_WEIGHTS": [8.0, 6.0, 4.5, 3.0, 2.5],
+  "BUY_COOLDOWN_TICKS": 12,
+
+  "VOL_SPIKE_FACTOR": 2.2,
+  "VOL_MA_PERIOD": 18,
+  "LATE_RSI_LIMIT": 63,
+  "LATE_MACD_LIMIT": -220000,
+  "LATE_STOCH_LIMIT": 3.0,
+  "LATE_EMA_DISTANCE_MIN": 0.32,
+
+  "BREAKEVEN_EXIT_THRESHOLDS": [0.012, 0.010, 0.009, 0.008, 0.007],
+  "RALLY_START_PROFIT": 0.018,
+  "RALLY_TRAIL_DROP": 0.012,
+
+  "ATR_PERCENTILE": 35,
+  "EMA_DISTANCE_PERCENT_MIN": 0.33,
+  "SELL_COOLDOWN_TICKS": 4
+}
+
+}
+AGGRESSIVE 성격
+물타기 빨리, 비중도 크다
+
+비상 손절(-9%)로 반등을 더 기다림
+
+TP 기준 완화 → 더 큰 수익 노림
+
+랠리 시작도 1.8%로 빠름
+→ 상승 파동 + 변동성 큰 장에서 유리
+→ 하락 추세에서는 리스크 증가
